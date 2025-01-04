@@ -24,7 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="稻米分析系統")
 
 # 設定靜態文件和模板，使用絕對路徑
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/outputs", StaticFiles(directory=str(BASE_DIR / "outputs")), name="outputs")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -328,11 +328,10 @@ async def health_check():
     return {"status": "healthy"}
 
 if __name__ == "__main__":
-    print(f"專案根目錄: {BASE_DIR}")
-    print(f"模板目錄: {BASE_DIR / 'templates'}")
+    port = int(os.getenv("PORT", 8000))  # 從環境變數讀取 PORT，若無則使用 8000
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         reload=True
     )

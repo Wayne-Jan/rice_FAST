@@ -1,7 +1,7 @@
 fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart==0.0.6
-numpy>=1.24.3
+numpy<2.0.0
 pandas>=2.0.0  # 添加缺少的 pandas
 opencv-python-headless>=4.8.0  # 改用 headless 版本，更適合 slim 環境
 onnxruntime==1.16.3
