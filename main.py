@@ -1,5 +1,7 @@
 # main.py
 
+import os
+import asyncio
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -12,6 +14,8 @@ from PIL import Image, ExifTags
 import io
 import piexif
 from typing import Optional, Dict, Tuple
+
+from download_models import verify_models, setup_models
 
 # 獲取專案根目錄的絕對路徑
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,7 +35,7 @@ MODEL_DIR = BASE_DIR / "models"
 ORIGINAL_OUTPUT_DIR = OUTPUT_DIR / "original"
 U2NET_OUTPUT_DIR = OUTPUT_DIR / "u2net"
 
-# 確保所有必要的目錄都存在
+# 定義所需的目錄列表
 REQUIRED_DIRS = [
     BASE_DIR / "static",
     BASE_DIR / "templates",
@@ -42,18 +46,44 @@ REQUIRED_DIRS = [
     U2NET_OUTPUT_DIR
 ]
 
-for dir_path in REQUIRED_DIRS:
-    dir_path.mkdir(parents=True, exist_ok=True)
+# 初始化推論管線為 None，稍後通過 get_pipeline() 初始化
+pipeline = None
 
-# 設定允許的檔案類型
-ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
+def initialize_models():
+    """確保模型檔案存在並初始化"""
+    missing = verify_models()
+    if missing:
+        print(f"需要下載以下模型: {', '.join(missing)}")
+        # 執行異步下載
+        asyncio.run(setup_models())
+    else:
+        print("所有模型已就緒")
 
-# 初始化推論管線
-pipeline = InferencePipeline(
-    model_dir=str(MODEL_DIR),
-    output_dir=str(OUTPUT_DIR),
-    device="cpu"
-)
+@app.on_event("startup")
+async def startup_event():
+    """應用程式啟動時執行"""
+    try:
+        # 確保所有必要的目錄都存在
+        for dir_path in REQUIRED_DIRS:
+            dir_path.mkdir(parents=True, exist_ok=True)
+        
+        # 初始化模型
+        initialize_models()
+        
+    except Exception as e:
+        print(f"應用程式啟動時發生錯誤: {str(e)}")
+        raise e
+
+def get_pipeline():
+    """取得 pipeline 實例，如果不存在則初始化"""
+    global pipeline
+    if pipeline is None:
+        pipeline = InferencePipeline(
+            model_dir=str(MODEL_DIR),
+            output_dir=str(OUTPUT_DIR),
+            device="cpu"
+        )
+    return pipeline
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -254,8 +284,8 @@ async def analyze_image(file: UploadFile = File(...)):
         compressed_original_path = ORIGINAL_OUTPUT_DIR / file.filename
         compress_image(file_path, compressed_original_path, max_size=500)
 
-        # 執行推論
-        result = pipeline.process_image(str(file_path))
+        # 使用 get_pipeline() 替代直接使用 pipeline
+        result = get_pipeline().process_image(str(file_path))
 
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["error"])
@@ -296,7 +326,6 @@ async def health_check():
     return {"status": "healthy"}
 
 if __name__ == "__main__":
-    import uvicorn
     print(f"專案根目錄: {BASE_DIR}")
     print(f"模板目錄: {BASE_DIR / 'templates'}")
     uvicorn.run(

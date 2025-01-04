@@ -2,7 +2,7 @@ fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart==0.0.6
 numpy>=1.24.0
-opencv-python>=4.8.0
+opencv-python-headless>=4.8.0  # 改用 headless 版本，更適合 slim 環境
 onnxruntime==1.16.3
 scikit-learn==1.5.1
 joblib==1.3.2
@@ -10,3 +10,7 @@ Jinja2==3.1.2
 aiofiles==23.2.1
 python-jose==3.3.0
 requests==2.31.0
+aiohttp>=3.8.0  # 新增：用於異步下載
+tqdm>=4.65.0    # 新增：用於顯示下載進度
+Pillow>=10.0.0  # 新增：用於圖片處理
+piexif>=1.1.3   # 新增：用於處理 EXIF 資訊
