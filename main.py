@@ -46,6 +46,8 @@ REQUIRED_DIRS = [
     U2NET_OUTPUT_DIR
 ]
 
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
+
 # 初始化推論管線為 None，稍後通過 get_pipeline() 初始化
 pipeline = None
 
