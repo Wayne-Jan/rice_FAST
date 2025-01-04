@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 模型文件
+*.onnx
+models/*.pkl
+
+# 專案特定
+uploads/*
+outputs/*
+!uploads/.gitkeep
+!outputs/.gitkeep
+!outputs/original/.gitkeep
+!outputs/u2net/.gitkeep
+
+# 環境相關
+.env
+venv/
