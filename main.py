@@ -1,5 +1,3 @@
-# main.py
-
 import os
 import asyncio
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
@@ -17,6 +15,12 @@ from typing import Optional, Dict, Tuple
 
 from download_models import verify_models, setup_models
 
+# 使用臨時目錄來存儲模型
+MODEL_DIR = Path("/tmp/models")
+OUTPUT_DIR = Path("/tmp/outputs")
+ORIGINAL_OUTPUT_DIR = OUTPUT_DIR / "original"
+U2NET_OUTPUT_DIR = OUTPUT_DIR / "u2net"
+
 # 獲取專案根目錄的絕對路徑
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -24,20 +28,15 @@ BASE_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="稻米分析系統")
 
 # 設定靜態文件和模板，使用絕對路徑
-# app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-app.mount("/outputs", StaticFiles(directory=str(BASE_DIR / "outputs")), name="outputs")
+app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # 建立必要的目錄
-UPLOAD_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "outputs"
-MODEL_DIR = BASE_DIR / "models"
-ORIGINAL_OUTPUT_DIR = OUTPUT_DIR / "original"
-U2NET_OUTPUT_DIR = OUTPUT_DIR / "u2net"
+UPLOAD_DIR = Path("/tmp/uploads")
 
 # 定義所需的目錄列表
 REQUIRED_DIRS = [
-    BASE_DIR / "static",
+    Path("/tmp/static"),
     BASE_DIR / "templates",
     UPLOAD_DIR,
     OUTPUT_DIR,

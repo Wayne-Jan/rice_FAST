@@ -3,6 +3,10 @@ import requests
 from pathlib import Path
 import onnx
 
+# 使用臨時目錄來存儲模型
+MODEL_DIR = Path("/tmp/models")
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
 def download_file(url: str, destination: Path, filename: str) -> bool:
     """
     從指定的 URL 下載文件。
@@ -46,10 +50,6 @@ def setup_models():
     """
     下載並驗證所需的模型文件。
     """
-    models_dir = Path("models")
-    models_dir.mkdir(parents=True, exist_ok=True)
-
-    # 定義模型及其對應的 GitHub Releases 下載 URL
     base_url = "https://github.com/Wayne-Jan/rice_FAST/releases/download/v1.0.0"
     models = {
         "YOLO.onnx": f"{base_url}/YOLO.onnx",
@@ -59,7 +59,7 @@ def setup_models():
     }
 
     for filename, url in models.items():
-        dest_path = models_dir / filename
+        dest_path = MODEL_DIR / filename
         if dest_path.exists():
             print(f"{filename} 已存在，進行驗證...")
             if filename.endswith('.onnx'):
@@ -93,12 +93,11 @@ def verify_models() -> list:
 
     :return: 缺失或無效的模型文件列表
     """
-    models_dir = Path("models")
     required_models = ["YOLO.onnx", "u2net.onnx", "model.onnx", "scaler.pkl"]
 
     missing_models = []
     for model in required_models:
-        model_path = models_dir / model
+        model_path = MODEL_DIR / model
         if not model_path.exists():
             missing_models.append(model)
         elif model.endswith('.onnx'):
