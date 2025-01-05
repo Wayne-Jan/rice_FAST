@@ -15,39 +15,49 @@ from typing import Optional, Dict, Tuple
 
 from download_models import verify_models, setup_models
 
-# 使用臨時目錄來存儲模型
+# 定義所有需要的目錄
 MODEL_DIR = Path("/tmp/models")
 OUTPUT_DIR = Path("/tmp/outputs")
+UPLOAD_DIR = Path("/tmp/uploads")
 ORIGINAL_OUTPUT_DIR = OUTPUT_DIR / "original"
 U2NET_OUTPUT_DIR = OUTPUT_DIR / "u2net"
 
 # 獲取專案根目錄的絕對路徑
 BASE_DIR = Path(__file__).resolve().parent
 
+def ensure_temp_directories():
+    """確保臨時目錄存在並可寫入"""
+    directories = [
+        MODEL_DIR, 
+        OUTPUT_DIR, 
+        UPLOAD_DIR, 
+        ORIGINAL_OUTPUT_DIR, 
+        U2NET_OUTPUT_DIR,
+        BASE_DIR / "templates"
+    ]
+    for directory in directories:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            # 測試目錄是否可寫入
+            test_file = directory / ".test"
+            test_file.touch()
+            test_file.unlink()
+        except Exception as e:
+            raise RuntimeError(f"無法創建或寫入目錄 {directory}: {str(e)}")
+
+# 確保所有目錄存在
+ensure_temp_directories()
+
 # FastAPI 應用程式
 app = FastAPI(title="稻米分析系統")
 
-# 設定靜態文件和模板，使用絕對路徑
+# 設定靜態文件和模板
 app.mount("/outputs", StaticFiles(directory=str(OUTPUT_DIR)), name="outputs")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# 建立必要的目錄
-UPLOAD_DIR = Path("/tmp/uploads")
-
-# 定義所需的目錄列表
-REQUIRED_DIRS = [
-    Path("/tmp/static"),
-    BASE_DIR / "templates",
-    UPLOAD_DIR,
-    OUTPUT_DIR,
-    MODEL_DIR,
-    ORIGINAL_OUTPUT_DIR,
-    U2NET_OUTPUT_DIR
-]
-
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
 
-# 初始化推論管線為 None，稍後通過 get_pipeline() 初始化
+# 初始化推論管線為 None
 pipeline = None
 
 def initialize_models():
@@ -64,9 +74,8 @@ def initialize_models():
 async def startup_event():
     """應用程式啟動時執行"""
     try:
-        # 確保所有必要的目錄都存在
-        for dir_path in REQUIRED_DIRS:
-            dir_path.mkdir(parents=True, exist_ok=True)
+        # 再次確保所有必要的目錄都存在
+        ensure_temp_directories()
         
         # 初始化模型
         initialize_models()
@@ -113,7 +122,7 @@ def convert_to_serializable(value):
     return str(value)
 
 def get_exif_data(img: Image.Image) -> Tuple[Optional[Dict], Optional[Dict]]:
-    """獲取圖片的 EXIF 資料，包含 GPS 資訊和方向資訊
+    """獲取圖片的 EXIF 資料
     
     Args:
         img: PIL Image 物件
@@ -327,7 +336,7 @@ async def health_check():
     return {"status": "healthy"}
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))  # 從環境變數讀取 PORT，若無則使用 8000
+    port = int(os.getenv("PORT", 8000))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
