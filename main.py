@@ -1,5 +1,7 @@
 import os
 import asyncio
+import gc
+from datetime import datetime, timedelta
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -12,8 +14,16 @@ from PIL import Image, ExifTags
 import io
 import piexif
 from typing import Optional, Dict, Tuple
-
+import onnxruntime as ort
 from download_models import verify_models, setup_models
+
+# 設定 ONNX Runtime 全域配置
+ort.set_default_logger_severity(3)  # 只顯示錯誤
+sess_options = ort.SessionOptions()
+sess_options.intra_op_num_threads = 1
+sess_options.inter_op_num_threads = 1
+sess_options.enable_mem_pattern = False
+sess_options.enable_cpu_mem_arena = False
 
 # 定義所有需要的目錄
 MODEL_DIR = Path("/tmp/models")
@@ -21,6 +31,9 @@ OUTPUT_DIR = Path("/tmp/outputs")
 UPLOAD_DIR = Path("/tmp/uploads")
 ORIGINAL_OUTPUT_DIR = OUTPUT_DIR / "original"
 U2NET_OUTPUT_DIR = OUTPUT_DIR / "u2net"
+
+# 設定檔案大小限制（5MB）
+MAX_FILE_SIZE = 5 * 1024 * 1024
 
 # 獲取專案根目錄的絕對路徑
 BASE_DIR = Path(__file__).resolve().parent
@@ -57,9 +70,6 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
 
-# 初始化推論管線為 None
-pipeline = None
-
 def initialize_models():
     """確保模型檔案存在並初始化"""
     missing = verify_models()
@@ -70,30 +80,44 @@ def initialize_models():
     else:
         print("所有模型已就緒")
 
+def get_pipeline():
+    """取得 pipeline 實例，使用後立即釋放"""
+    return InferencePipeline(
+        model_dir=str(MODEL_DIR),
+        output_dir=str(OUTPUT_DIR),
+        device="cpu"
+    )
+
+async def cleanup_temp_files():
+    """定期清理臨時檔案"""
+    while True:
+        try:
+            # 清理超過1小時的檔案
+            cutoff = datetime.now() - timedelta(hours=1)
+            for directory in [UPLOAD_DIR, ORIGINAL_OUTPUT_DIR, U2NET_OUTPUT_DIR]:
+                if directory.exists():
+                    for file_path in directory.glob("*"):
+                        try:
+                            if file_path.stat().st_mtime < cutoff.timestamp():
+                                file_path.unlink(missing_ok=True)
+                        except Exception as e:
+                            print(f"清理檔案 {file_path} 時發生錯誤: {str(e)}")
+            await asyncio.sleep(600)  # 每10分鐘執行一次
+        except Exception as e:
+            print(f"清理臨時檔案時發生錯誤: {str(e)}")
+            await asyncio.sleep(60)
+
 @app.on_event("startup")
 async def startup_event():
     """應用程式啟動時執行"""
     try:
-        # 再次確保所有必要的目錄都存在
         ensure_temp_directories()
-        
-        # 初始化模型
         initialize_models()
-        
+        # 啟動清理任務
+        asyncio.create_task(cleanup_temp_files())
     except Exception as e:
         print(f"應用程式啟動時發生錯誤: {str(e)}")
         raise e
-
-def get_pipeline():
-    """取得 pipeline 實例，如果不存在則初始化"""
-    global pipeline
-    if pipeline is None:
-        pipeline = InferencePipeline(
-            model_dir=str(MODEL_DIR),
-            output_dir=str(OUTPUT_DIR),
-            device="cpu"
-        )
-    return pipeline
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -107,105 +131,13 @@ async def read_root(request: Request):
         print(f"讀取模板時發生錯誤: {str(e)}")
         return HTMLResponse(content="<h1>系統錯誤</h1><p>無法載入首頁模板</p>")
 
-def convert_to_serializable(value):
-    """將 EXIF 值轉換為可序列化的格式"""
-    if isinstance(value, tuple) and len(value) == 2:  # IFDRational
-        return float(value[0]) / float(value[1]) if value[1] != 0 else 0
-    elif isinstance(value, bytes):
-        return value.decode('utf-8', errors='ignore')
-    elif isinstance(value, (int, float, str)):
-        return value
-    elif isinstance(value, (tuple, list)):
-        return [convert_to_serializable(x) for x in value]
-    elif isinstance(value, dict):
-        return {k: convert_to_serializable(v) for k, v in value.items()}
-    return str(value)
-
-def get_exif_data(img: Image.Image) -> Tuple[Optional[Dict], Optional[Dict]]:
-    """獲取圖片的 EXIF 資料
-    
-    Args:
-        img: PIL Image 物件
-    
-    Returns:
-        Tuple[Optional[Dict], Optional[Dict]]: GPS 資訊和方向資訊
-    """
-    try:
-        exif = img._getexif()
-        if not exif:
-            return None, None
-
-        gps_info = {}
-        orientation = None
-
-        for tag_id in exif:
-            tag = ExifTags.TAGS.get(tag_id, tag_id)
-            if tag == 'GPSInfo':
-                gps_data = exif[tag_id]
-                for t in gps_data:
-                    sub_tag = ExifTags.GPSTAGS.get(t, t)
-                    gps_info[sub_tag] = convert_to_serializable(gps_data[t])
-            elif tag == 'Orientation':
-                orientation = exif[tag_id]
-
-        return gps_info, {'Orientation': orientation} if orientation else None
-
-    except Exception as e:
-        print(f"讀取 EXIF 資料時發生錯誤: {str(e)}")
-        return None, None
-
-def format_gps_data(gps_info: Optional[Dict]) -> Optional[Dict]:
-    """格式化 GPS 資訊為易讀格式
-    
-    Args:
-        gps_info: 原始 GPS 資訊字典
-        
-    Returns:
-        Optional[Dict]: 格式化後的 GPS 資訊
-    """
-    if not gps_info:
-        return None
-        
-    try:
-        formatted_gps = {}
-        
-        # 處理緯度
-        if 'GPSLatitude' in gps_info and 'GPSLatitudeRef' in gps_info:
-            lat = gps_info['GPSLatitude']
-            lat_ref = gps_info['GPSLatitudeRef']
-            formatted_gps['latitude'] = round(lat * (-1 if lat_ref.upper() == 'S' else 1), 6)
-            
-        # 處理經度
-        if 'GPSLongitude' in gps_info and 'GPSLongitudeRef' in gps_info:
-            lon = gps_info['GPSLongitude']
-            lon_ref = gps_info['GPSLongitudeRef']
-            formatted_gps['longitude'] = round(lon * (-1 if lon_ref.upper() == 'W' else 1), 6)
-            
-        # 處理海拔
-        if 'GPSAltitude' in gps_info:
-            formatted_gps['altitude'] = round(float(gps_info['GPSAltitude']), 2)
-            
-        return formatted_gps if formatted_gps else None
-        
-    except Exception as e:
-        print(f"格式化 GPS 資料時發生錯誤: {str(e)}")
-        return None
-
 def fix_image_orientation(img: Image.Image, orientation: Optional[Dict]) -> Image.Image:
-    """根據 EXIF 方向資訊修正圖片方向
-    
-    Args:
-        img: PIL Image 物件
-        orientation: 方向資訊字典
-    
-    Returns:
-        Image.Image: 修正方向後的圖片
-    """
+    """根據 EXIF 方向資訊修正圖片方向"""
     if not orientation:
         return img
 
     ORIENTATION_DICT = {
-        1: None,  # 正常
+        1: None,
         2: (Image.FLIP_LEFT_RIGHT,),
         3: (Image.ROTATE_180,),
         4: (Image.FLIP_TOP_BOTTOM,),
@@ -224,44 +156,50 @@ def fix_image_orientation(img: Image.Image, orientation: Optional[Dict]) -> Imag
     
     return img
 
-def compress_image(input_path: Path, output_path: Path, max_size=500):
-    """壓縮圖片並保留 EXIF 資訊
+def get_exif_data(img: Image.Image) -> Tuple[Optional[Dict], Optional[Dict]]:
+    """獲取圖片的 EXIF 資料"""
+    try:
+        exif = img._getexif()
+        if not exif:
+            return None, None
+
+        gps_info = {}
+        orientation = None
+
+        for tag_id in exif:
+            tag = ExifTags.TAGS.get(tag_id, tag_id)
+            if tag == 'Orientation':
+                orientation = exif[tag_id]
+
+        return None, {'Orientation': orientation} if orientation else None
+
+    except Exception as e:
+        print(f"讀取 EXIF 資料時發生錯誤: {str(e)}")
+        return None, None
+
+def compress_image(img: Image.Image, max_size=500) -> bytes:
+    """壓縮圖片
     
     Args:
-        input_path (Path): 原始圖片路徑
-        output_path (Path): 壓縮後圖片的保存路徑
-        max_size (int): 最大檔案大小（KB）
+        img: PIL Image 物件
+        max_size: 最大檔案大小（KB）
+    
+    Returns:
+        bytes: 壓縮後的圖片數據
     """
-    img = Image.open(input_path)
-    
-    # 讀取 EXIF 資料
-    try:
-        exif_dict = piexif.load(img.info['exif'])
-    except:
-        exif_dict = None
-    
-    # 獲取圖片格式
-    img_format = img.format
-
     # 初始品質
     quality = 95
     while True:
         # 保存到內存
         buffer = io.BytesIO()
-        if exif_dict:
-            exif_bytes = piexif.dump(exif_dict)
-            img.save(buffer, format=img_format, quality=quality, exif=exif_bytes)
-        else:
-            img.save(buffer, format=img_format, quality=quality)
-            
+        img.save(buffer, format='JPEG', quality=quality)
         size_kb = buffer.getbuffer().nbytes / 1024
+        
         if size_kb <= max_size or quality <= 10:
-            break
+            buffer.seek(0)
+            return buffer.getvalue()
+            
         quality -= 5
-
-    # 保存到檔案
-    with open(output_path, "wb") as f:
-        f.write(buffer.getvalue())
 
 @app.post("/analyze", response_class=JSONResponse)
 async def analyze_image(file: UploadFile = File(...)):
@@ -272,63 +210,76 @@ async def analyze_image(file: UploadFile = File(...)):
         if file_extension not in ALLOWED_EXTENSIONS:
             raise HTTPException(status_code=400, detail="不支持的檔案類型")
 
-        # 儲存上傳的檔案
-        file_path = UPLOAD_DIR / file.filename
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # 分批讀取檔案
+        file_size = 0
+        with io.BytesIO() as file_bytes:
+            chunk_size = 8192  # 8KB chunks
+            while chunk := await file.read(chunk_size):
+                file_size += len(chunk)
+                if file_size > MAX_FILE_SIZE:
+                    raise HTTPException(status_code=400, detail="檔案太大")
+                file_bytes.write(chunk)
+            
+            file_bytes.seek(0)
+            
+            # 建立暫存檔案路徑
+            temp_file_path = UPLOAD_DIR / file.filename
+            
+            try:
+                # 處理圖片方向和壓縮
+                img = Image.open(file_bytes)
+                _, orientation_info = get_exif_data(img)
+                img = fix_image_orientation(img, orientation_info)
+                
+                # 儲存處理後的圖片
+                compressed_data = compress_image(img)
+                with open(temp_file_path, "wb") as f:
+                    f.write(compressed_data)
+                
+                # 儲存壓縮後的原始圖片
+                compressed_original_path = ORIGINAL_OUTPUT_DIR / file.filename
+                with open(compressed_original_path, "wb") as f:
+                    f.write(compressed_data)
 
-        # 讀取圖片並獲取 EXIF 資料
-        img = Image.open(file_path)
-        gps_info, orientation_info = get_exif_data(img)
-        
-        # 格式化 GPS 資料
-        formatted_gps = format_gps_data(gps_info)
-        
-        # 修正圖片方向
-        img = fix_image_orientation(img, orientation_info)
-        
-        # 重新保存修正方向後的圖片
-        img.save(file_path)
+                try:
+                    # 取得 pipeline 並處理圖片
+                    pipeline = get_pipeline()
+                    result = pipeline.process_image(str(temp_file_path))
+                    
+                    # 立即清理
+                    del pipeline
+                    gc.collect()
+                    
+                    if result["status"] == "error":
+                        raise HTTPException(status_code=500, detail=result["error"])
+                    
+                    # 構建回應
+                    response_data = {
+                        "message": "分析完成",
+                        "filename": file.filename,
+                        "prediction": round(float(result["prediction"]), 2),
+                        "processing_time": round(float(result["processing_time"]), 2),
+                        "masked_image_url": f"/outputs/u2net/{Path(result['masked_image_path']).name}",
+                        "mask_image_url": f"/outputs/u2net/{Path(result['mask_path']).name}",
+                        "original_image_url": f"/outputs/original/{file.filename}"
+                    }
+                    
+                    return JSONResponse(response_data)
+                    
+                finally:
+                    # 清理暫存檔案
+                    temp_file_path.unlink(missing_ok=True)
+                    gc.collect()
 
-        # 壓縮原圖並保存到 outputs/original/
-        compressed_original_path = ORIGINAL_OUTPUT_DIR / file.filename
-        compress_image(file_path, compressed_original_path, max_size=500)
-
-        # 使用 get_pipeline() 替代直接使用 pipeline
-        result = get_pipeline().process_image(str(file_path))
-
-        if result["status"] == "error":
-            raise HTTPException(status_code=500, detail=result["error"])
-        
-        # 構建輸出圖片的URL
-        masked_image_name = Path(result['masked_image_path']).name
-        mask_image_name = Path(result['mask_path']).name
-        masked_image_url = f"/outputs/u2net/{masked_image_name}"
-        mask_image_url = f"/outputs/u2net/{mask_image_name}"
-        original_image_url = f"/outputs/original/{file.filename}"
-        
-        # 在推論完成後刪除原始上傳的圖片
-        file_path.unlink(missing_ok=True)
-        
-        return JSONResponse({
-            "message": "分析完成",
-            "filename": file.filename,
-            "prediction": round(float(result["prediction"]), 2),
-            "processing_time": round(float(result["processing_time"]), 2),
-            "original_image_url": original_image_url,
-            "masked_image_url": masked_image_url,
-            "mask_image_url": mask_image_url,
-            "gps_info": formatted_gps,
-            "orientation_fixed": orientation_info is not None
-        })
-
-    except HTTPException as http_exc:
-        raise http_exc
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"圖片處理失敗: {str(e)}")
+            
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"處理過程中發生錯誤: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"處理過程中發生錯誤: {str(e)}")
 
 @app.get("/health")
 async def health_check():

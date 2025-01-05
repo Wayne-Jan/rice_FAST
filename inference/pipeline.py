@@ -1,5 +1,3 @@
-# inference/pipeline.py
-
 import os
 from pathlib import Path
 import time
@@ -7,6 +5,7 @@ import numpy as np
 import onnxruntime
 import joblib
 from typing import Dict, Tuple, Optional
+import gc
 
 # 從相應模組導入所需的函數和類別
 from .yolo import run_yolo_inference
@@ -39,33 +38,78 @@ class InferencePipeline:
         (self.output_dir / "u2net").mkdir(exist_ok=True)
         (self.output_dir / "results").mkdir(exist_ok=True)
         
-        # 載入所有需要的模型
-        self._load_models()
-        
         # 設定推論提供者
         self.providers = ['CUDAExecutionProvider'] if device == "cuda" and 'CUDAExecutionProvider' in onnxruntime.get_available_providers() else ['CPUExecutionProvider']
+        
+        # 初始化延遲載入的模型變數
+        self._yolo_session = None
+        self._u2net_inference = None
+        self._predictor_session = None
+        self._scaler = None
+        
+        # 設定模型路徑
+        self.yolo_onnx_path = str(self.model_dir / "YOLO.onnx")
+        self.u2net_onnx_path = str(self.model_dir / "u2net.onnx")
+        self.predictor_onnx_path = str(self.model_dir / "model.onnx")
+        self.scaler_path = str(self.model_dir / "scaler.pkl")
 
-    def _load_models(self):
-        """載入所有需要的模型和 scaler"""
-        try:
-            # 載入 YOLO 模型
-            self.yolo_onnx_path = str(self.model_dir / "YOLO.onnx")
+    def _get_providers(self):
+        """獲取推論提供者列表"""
+        return self.providers
+
+    def _load_yolo(self):
+        """延遲載入 YOLO 模型"""
+        if self._yolo_session is None:
+            self._yolo_session = onnxruntime.InferenceSession(
+                self.yolo_onnx_path,
+                providers=self._get_providers(),
+                sess_options=self._get_session_options()
+            )
+
+    def _load_u2net(self):
+        """延遲載入 U2NET 模型"""
+        if self._u2net_inference is None:
+            self._u2net_inference = U2NetInference(self.u2net_onnx_path)
+
+    def _load_predictor(self):
+        """延遲載入預測模型和 scaler"""
+        if self._predictor_session is None:
+            self._predictor_session = onnxruntime.InferenceSession(
+                self.predictor_onnx_path,
+                providers=self._get_providers(),
+                sess_options=self._get_session_options()
+            )
+        if self._scaler is None:
+            self._scaler = joblib.load(self.scaler_path)
+
+    def _get_session_options(self):
+        """獲取 ONNX Runtime 會話選項"""
+        sess_options = onnxruntime.SessionOptions()
+        sess_options.intra_op_num_threads = 1
+        sess_options.inter_op_num_threads = 1
+        sess_options.enable_mem_pattern = False
+        sess_options.enable_cpu_mem_arena = False
+        return sess_options
+
+    def _unload_models(self):
+        """卸載所有模型釋放記憶體"""
+        if self._yolo_session:
+            del self._yolo_session
+            self._yolo_session = None
+        
+        if self._u2net_inference:
+            del self._u2net_inference
+            self._u2net_inference = None
             
-            # 載入 U2NET 模型
-            self.u2net_onnx_path = str(self.model_dir / "u2net.onnx")
-            self.u2net_inference = U2NetInference(self.u2net_onnx_path)
+        if self._predictor_session:
+            del self._predictor_session
+            self._predictor_session = None
             
-            # 載入預測模型
-            self.predictor_onnx_path = str(self.model_dir / "model.onnx")
-            
-            # 載入 scaler
-            self.scaler_path = str(self.model_dir / "scaler.pkl")
-            self.scaler = joblib.load(self.scaler_path)
-            
-            print("所有模型載入完成")
-            
-        except Exception as e:
-            raise RuntimeError(f"載入模型時發生錯誤: {str(e)}")
+        if self._scaler:
+            del self._scaler
+            self._scaler = None
+        
+        gc.collect()
 
     def process_image(self, image_path: str) -> Dict:
         """
@@ -82,15 +126,23 @@ class InferencePipeline:
         try:
             # 1. YOLO 偵測
             print("執行 YOLO 偵測...")
-            checker_centers = run_yolo_inference(self.yolo_onnx_path, image_path)
+            self._load_yolo()
+            checker_centers = run_yolo_inference(self.yolo_onnx_path, image_path, providers=self.providers)
+            del self._yolo_session
+            self._yolo_session = None
+            gc.collect()
             
             # 2. U2NET 分割
             print("執行 U2NET 分割...")
-            mask_path, masked_image_path = self.u2net_inference(
+            self._load_u2net()
+            mask_path, masked_image_path = self._u2net_inference(
                 image_path=image_path,
                 output_dir=str(self.output_dir / "u2net"),
                 target_size=512
             )
+            del self._u2net_inference
+            self._u2net_inference = None
+            gc.collect()
             
             # 3. 特徵提取
             print("執行特徵提取...")
@@ -98,12 +150,11 @@ class InferencePipeline:
             image_list = [
                 {
                     'image_path': image_path,
-                    'mask_path': masked_image_path,  # 使用去背後的影像進行分析
+                    'mask_path': masked_image_path,
                     'checker_centers': checker_centers
                 }
             ]
             analyzer.analyze_batch(image_list)
-            analyzer.save_results()
             
             # 4. 預測
             print("執行最終預測...")
@@ -124,6 +175,10 @@ class InferencePipeline:
                 "status": "error",
                 "error": str(e)
             }
+        finally:
+            # 確保所有模型都被卸載
+            self._unload_models()
+            gc.collect()
 
     def _predict(self, analyzer: RiceAnalyzer) -> float:
         """執行最終預測
@@ -134,22 +189,42 @@ class InferencePipeline:
         Returns:
             float: 預測結果
         """
-        # 假設只分析一張圖片，取得特徵
-        if not analyzer.results:
-            raise ValueError("沒有分析結果可供預測")
-        
-        features = analyzer.results[0]['features']
-        features_array = np.array(features).reshape(1, -1)
-        
-        # 標準化特徵
-        scaled_features = self.scaler.transform(features_array).astype(np.float32)
-        
-        # 建立 ONNX Runtime session
-        session = onnxruntime.InferenceSession(self.predictor_onnx_path, providers=self.providers)
-        
-        input_name = session.get_inputs()[0].name
-        output_name = session.get_outputs()[0].name
-        
-        # 推論
-        prediction = session.run([output_name], {input_name: scaled_features})[0][0]
-        return prediction
+        try:
+            # 載入預測模型和 scaler
+            self._load_predictor()
+            
+            # 假設只分析一張圖片，取得特徵
+            if not analyzer.results:
+                raise ValueError("沒有分析結果可供預測")
+            
+            features = analyzer.results[0]['features']
+            features_array = np.array(features).reshape(1, -1)
+            
+            # 標準化特徵
+            scaled_features = self._scaler.transform(features_array).astype(np.float32)
+            
+            # 取得輸入輸出名稱
+            input_name = self._predictor_session.get_inputs()[0].name
+            output_name = self._predictor_session.get_outputs()[0].name
+            
+            # 推論
+            prediction = self._predictor_session.run(
+                [output_name], 
+                {input_name: scaled_features}
+            )[0][0]
+            
+            return prediction
+            
+        finally:
+            # 釋放預測模型和 scaler
+            if self._predictor_session:
+                del self._predictor_session
+                self._predictor_session = None
+            if self._scaler:
+                del self._scaler
+                self._scaler = None
+            gc.collect()
+
+    def __del__(self):
+        """解構函數，確保資源被釋放"""
+        self._unload_models()
