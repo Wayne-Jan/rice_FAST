@@ -7,23 +7,21 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 import shutil
 import uvicorn
-from inference.pipeline import InferencePipeline
 from PIL import Image, ExifTags
 import io
 import piexif
 from typing import Optional, Dict, Tuple
 import psutil
 import os
+import gc
 
-
-# 獲取專案根目錄的絕對路徑
+# 獲取專案根目錄的絶對路徑
 BASE_DIR = Path(__file__).resolve().parent
 
 # FastAPI 應用程式
 app = FastAPI(title="稻米分析系統")
 
 # 設定靜態文件和模板，使用絕對路徑
-# app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/outputs", StaticFiles(directory=str(BASE_DIR / "outputs")), name="outputs")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -51,12 +49,31 @@ for dir_path in REQUIRED_DIRS:
 # 設定允許的檔案類型
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
 
-# 初始化推論管線
-pipeline = InferencePipeline(
-    model_dir=str(MODEL_DIR),
-    output_dir=str(OUTPUT_DIR),
-    device="cpu"
-)
+# 延遲載入的推論管線
+pipeline = None
+
+def get_pipeline():
+    """惰性載入推論管線"""
+    global pipeline
+    if pipeline is None:
+        from inference.pipeline import InferencePipeline
+        pipeline = InferencePipeline(
+            model_dir=str(MODEL_DIR),
+            output_dir=str(OUTPUT_DIR),
+            device="cpu"
+        )
+    return pipeline
+
+def optimize_memory():
+    """優化記憶體使用"""
+    gc.collect()  # 強制垃圾回收
+    
+    try:
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6')
+        libc.malloc_trim(0)  # 釋放未使用的記憶體
+    except:
+        pass  # 如果不是 Linux 系統則忽略
 
 def get_memory_usage():
     """獲取當前程序的記憶體使用資訊"""
@@ -253,14 +270,8 @@ async def analyze_image(file: UploadFile = File(...)):
         # 讀取圖片並獲取 EXIF 資料
         img = Image.open(file_path)
         gps_info, orientation_info = get_exif_data(img)
-        
-        # 格式化 GPS 資料
         formatted_gps = format_gps_data(gps_info)
-        
-        # 修正圖片方向
         img = fix_image_orientation(img, orientation_info)
-        
-        # 重新保存修正方向後的圖片
         img.save(file_path)
 
         # 壓縮原圖並保存到 outputs/original/
@@ -268,7 +279,8 @@ async def analyze_image(file: UploadFile = File(...)):
         compress_image(file_path, compressed_original_path, max_size=500)
 
         # 執行推論
-        result = pipeline.process_image(str(file_path))
+        current_pipeline = get_pipeline()  # 惰性載入推論管線
+        result = current_pipeline.process_image(str(file_path))
 
         if result["status"] == "error":
             raise HTTPException(status_code=500, detail=result["error"])
@@ -283,6 +295,9 @@ async def analyze_image(file: UploadFile = File(...)):
         # 在推論完成後刪除原始上傳的圖片
         file_path.unlink(missing_ok=True)
         
+        # 優化記憶體使用
+        optimize_memory()
+
         memory_usage = get_memory_usage()
         return JSONResponse({
             "message": "分析完成",
@@ -304,6 +319,24 @@ async def analyze_image(file: UploadFile = File(...)):
             status_code=500,
             detail=f"處理過程中發生錯誤: {str(e)}"
         )
+    finally:
+        optimize_memory()  # 確保在處理完畢後進行記憶體優化
+
+@app.get("/memory", response_class=JSONResponse)
+async def memory_endpoint():
+    """獲取當前記憶體使用狀況的端點"""
+    try:
+        memory_usage = get_memory_usage()
+        return JSONResponse({
+            "status": "success",
+            "memory_usage": memory_usage
+        })
+    except Exception as e:
+        print(f"獲取記憶體資訊時發生錯誤: {str(e)}")  # 在後端日誌中輸出錯誤
+        raise HTTPException(
+            status_code=500,
+            detail=f"獲取記憶體使用資訊時發生錯誤: {str(e)}"
+        )
 
 @app.get("/health")
 async def health_check():
@@ -318,5 +351,7 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True
+        reload=True,
+        workers=1,  # 限制工作程序數量
+        limit_max_requests=100  # 處理特定請求數後自動重啟
     )
