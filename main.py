@@ -12,6 +12,9 @@ from PIL import Image, ExifTags
 import io
 import piexif
 from typing import Optional, Dict, Tuple
+import psutil
+import os
+
 
 # 獲取專案根目錄的絕對路徑
 BASE_DIR = Path(__file__).resolve().parent
@@ -20,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="稻米分析系統")
 
 # 設定靜態文件和模板，使用絕對路徑
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/outputs", StaticFiles(directory=str(BASE_DIR / "outputs")), name="outputs")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -54,6 +57,16 @@ pipeline = InferencePipeline(
     output_dir=str(OUTPUT_DIR),
     device="cpu"
 )
+
+def get_memory_usage():
+    """獲取當前程序的記憶體使用資訊"""
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    return {
+        'rss': round(memory_info.rss / 1024 / 1024, 2),  # RSS (常駐集大小)，轉換為 MB
+        'vms': round(memory_info.vms / 1024 / 1024, 2),  # VMS (虛擬記憶體大小)，轉換為 MB
+        'percent': round(process.memory_percent(), 2)     # 記憶體使用百分比
+    }
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -270,6 +283,7 @@ async def analyze_image(file: UploadFile = File(...)):
         # 在推論完成後刪除原始上傳的圖片
         file_path.unlink(missing_ok=True)
         
+        memory_usage = get_memory_usage()
         return JSONResponse({
             "message": "分析完成",
             "filename": file.filename,
@@ -279,7 +293,8 @@ async def analyze_image(file: UploadFile = File(...)):
             "masked_image_url": masked_image_url,
             "mask_image_url": mask_image_url,
             "gps_info": formatted_gps,
-            "orientation_fixed": orientation_info is not None
+            "orientation_fixed": orientation_info is not None,
+            "memory_usage": memory_usage  # 新增記憶體使用資訊
         })
 
     except HTTPException as http_exc:

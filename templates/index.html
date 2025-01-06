@@ -1,152 +1,217 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
+
 <head>
-    <meta charset="UTF-8">
-    <title>稻米分析系統</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        /* 自訂樣式 */
-        .image-container {
-            text-align: center;
-            margin-top: 20px;
-        }
-        .image-container img {
-            max-width: 100%;
-            height: auto;
-        }
-        /* Spinner 居中 */
-        #spinner {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            z-index: 1050; /* 高於模態框 */
-            display: none;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <title>稻米分析系統</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    /* 自訂樣式 */
+    .image-container {
+      text-align: center;
+      margin-top: 20px;
+    }
+
+    .image-container img {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Spinner 居中 */
+    #spinner {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 1050;
+      display: none;
+    }
+
+    /* 記憶體使用資訊卡片樣式 */
+    .memory-card {
+      background-color: #f8f9fa;
+      border-radius: 8px;
+    }
+
+    .memory-card .card-header {
+      background-color: #e9ecef;
+      border-bottom: 1px solid #dee2e6;
+    }
+
+    .memory-info {
+      font-size: 0.9rem;
+    }
+
+    .memory-value {
+      font-weight: 600;
+      color: #0d6efd;
+    }
+  </style>
 </head>
+
 <body>
-    <div class="container">
-        <h1 class="mt-5">稻米分析系統</h1>
-        <p class="lead">上傳您的稻米圖片以進行分析。</p>
-        
-        <form id="upload-form" enctype="multipart/form-data">
-            <div class="mb-3">
-                <input class="form-control" type="file" id="file" name="file" accept=".jpg,.jpeg,.png" required>
-            </div>
-            <button type="submit" class="btn btn-primary">上傳並分析</button>
-        </form>
+  <div class="container">
+    <h1 class="mt-5">稻米分析系統</h1>
+    <p class="lead">上傳您的稻米圖片以進行分析。</p>
 
-        <!-- Spinner -->
-        <div id="spinner">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">處理中...</span>
-            </div>
-        </div>
+    <form id="upload-form" enctype="multipart/form-data">
+      <div class="mb-3">
+        <input class="form-control" type="file" id="file" name="file" accept=".jpg,.jpeg,.png" required>
+      </div>
+      <button type="submit" class="btn btn-primary">上傳並分析</button>
+    </form>
 
-        <!-- 分析結果模態框 -->
-        <div class="modal fade" id="resultModal" tabindex="-1" aria-labelledby="resultModalLabel" aria-hidden="true">
-          <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-              <div class="modal-header">
-                <h5 class="modal-title" id="resultModalLabel">分析結果</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-              </div>
-              <div class="modal-body">
-                <p><strong>預測結果:</strong> <span id="prediction"></span></p>
-                <p><strong>處理時間:</strong> <span id="processing_time"></span> 秒</p>
-                
-                <div id="carouselExampleIndicators" class="carousel slide" data-bs-ride="carousel">
-                  <div class="carousel-indicators">
-                    <button type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide-to="0" class="active" aria-current="true" aria-label="原圖"></button>
-                    <button type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide-to="1" aria-label="去背後的稻穗圖"></button>
-                  </div>
-                  <div class="carousel-inner">
-                    <div class="carousel-item active">
-                      <h5 class="text-center">原圖</h5>
-                      <img src="#" class="d-block w-100" id="original_image" alt="原圖">
-                    </div>
-                    <div class="carousel-item">
-                      <h5 class="text-center">去背後的稻穗圖</h5>
-                      <img src="#" class="d-block w-100" id="masked_image" alt="去背後的稻穗圖">
-                    </div>
-                  </div>
-                  <button class="carousel-control-prev" type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide="prev">
-                    <span class="carousel-control-prev-icon" aria-hidden="true"></span>
-                    <span class="visually-hidden">上一張</span>
-                  </button>
-                  <button class="carousel-control-next" type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide="next">
-                    <span class="carousel-control-next-icon" aria-hidden="true"></span>
-                    <span class="visually-hidden">下一張</span>
-                  </button>
-                </div>
-              </div>
-              <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">關閉</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
+    <!-- Spinner -->
+    <div id="spinner">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">處理中...</span>
+      </div>
     </div>
 
-    <!-- Bootstrap JS 與依賴 -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <!-- 使用 Fetch API 處理表單提交 -->
-    <script>
-        document.getElementById('upload-form').addEventListener('submit', async function(event) {
-            event.preventDefault(); // 防止表單默認提交行為
+    <!-- 分析結果模態框 -->
+    <div class="modal fade" id="resultModal" tabindex="-1" aria-labelledby="resultModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="resultModalLabel">分析結果</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-4">
+              <p><strong>預測結果:</strong> <span id="prediction"></span></p>
+              <p><strong>處理時間:</strong> <span id="processing_time"></span> 秒</p>
+            </div>
 
-            const fileInput = document.getElementById('file');
-            if (fileInput.files.length === 0) {
-                alert("請選擇一個檔案進行上傳。");
-                return;
-            }
+            <!-- 記憶體使用資訊卡片 -->
+            <div class="card memory-card mb-4">
+              <div class="card-header">
+                <h6 class="mb-0">系統資源使用狀況</h6>
+              </div>
+              <div class="card-body">
+                <div class="row">
+                  <div class="col-md-4">
+                    <div class="memory-info">
+                      <strong>實體記憶體 (RSS):</strong><br>
+                      <span id="memory_rss" class="memory-value"></span> MB
+                    </div>
+                  </div>
+                  <div class="col-md-4">
+                    <div class="memory-info">
+                      <strong>虛擬記憶體 (VMS):</strong><br>
+                      <span id="memory_vms" class="memory-value"></span> MB
+                    </div>
+                  </div>
+                  <div class="col-md-4">
+                    <div class="memory-info">
+                      <strong>記憶體使用率:</strong><br>
+                      <span id="memory_percent" class="memory-value"></span>%
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
 
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
+            <!-- 圖片輪播 -->
+            <div id="carouselExampleIndicators" class="carousel slide" data-bs-ride="carousel">
+              <div class="carousel-indicators">
+                <button type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide-to="0" class="active"
+                  aria-current="true" aria-label="原圖"></button>
+                <button type="button" data-bs-target="#carouselExampleIndicators" data-bs-slide-to="1"
+                  aria-label="去背後的稻穗圖"></button>
+              </div>
+              <div class="carousel-inner">
+                <div class="carousel-item active">
+                  <h5 class="text-center">原圖</h5>
+                  <img src="#" class="d-block w-100" id="original_image" alt="原圖">
+                </div>
+                <div class="carousel-item">
+                  <h5 class="text-center">去背後的稻穗圖</h5>
+                  <img src="#" class="d-block w-100" id="masked_image" alt="去背後的稻穗圖">
+                </div>
+              </div>
+              <button class="carousel-control-prev" type="button" data-bs-target="#carouselExampleIndicators"
+                data-bs-slide="prev">
+                <span class="carousel-control-prev-icon" aria-hidden="true"></span>
+                <span class="visually-hidden">上一張</span>
+              </button>
+              <button class="carousel-control-next" type="button" data-bs-target="#carouselExampleIndicators"
+                data-bs-slide="next">
+                <span class="carousel-control-next-icon" aria-hidden="true"></span>
+                <span class="visually-hidden">下一張</span>
+              </button>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">關閉</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
-            const spinner = document.getElementById('spinner');
-            const uploadButton = document.querySelector('button[type="submit"]');
+  <!-- Bootstrap JS 與依賴 -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- 使用 Fetch API 處理表單提交 -->
+  <script>
+    document.getElementById('upload-form').addEventListener('submit', async function (event) {
+      event.preventDefault();
 
-            try {
-                // 顯示 spinner，禁用上傳按鈕
-                spinner.style.display = 'block';
-                uploadButton.disabled = true;
+      const fileInput = document.getElementById('file');
+      if (fileInput.files.length === 0) {
+        alert("請選擇一個檔案進行上傳。");
+        return;
+      }
 
-                const response = await fetch('/analyze', {
-                    method: 'POST',
-                    body: formData
-                });
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
 
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.detail || '上傳或分析失敗');
-                }
+      const spinner = document.getElementById('spinner');
+      const uploadButton = document.querySelector('button[type="submit"]');
 
-                const data = await response.json();
+      try {
+        // 顯示 spinner，禁用上傳按鈕
+        spinner.style.display = 'block';
+        uploadButton.disabled = true;
 
-                // 填充模態框中的內容
-                document.getElementById('prediction').innerText = data.prediction;
-                document.getElementById('processing_time').innerText = data.processing_time;
-                document.getElementById('original_image').src = data.original_image_url;
-                document.getElementById('masked_image').src = data.masked_image_url;
-
-                // 顯示模態框
-                const resultModal = new bootstrap.Modal(document.getElementById('resultModal'));
-                resultModal.show();
-
-                // 清空檔案輸入
-                fileInput.value = '';
-
-            } catch (error) {
-                alert(`錯誤: ${error.message}`);
-            } finally {
-                // 隱藏 spinner，啟用上傳按鈕
-                spinner.style.display = 'none';
-                uploadButton.disabled = false;
-            }
+        const response = await fetch('/analyze', {
+          method: 'POST',
+          body: formData
         });
-    </script>
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || '上傳或分析失敗');
+        }
+
+        const data = await response.json();
+
+        // 填充模態框中的內容
+        document.getElementById('prediction').innerText = data.prediction;
+        document.getElementById('processing_time').innerText = data.processing_time;
+        document.getElementById('original_image').src = data.original_image_url;
+        document.getElementById('masked_image').src = data.masked_image_url;
+
+        // 填充記憶體使用資訊
+        document.getElementById('memory_rss').innerText = data.memory_usage.rss;
+        document.getElementById('memory_vms').innerText = data.memory_usage.vms;
+        document.getElementById('memory_percent').innerText = data.memory_usage.percent;
+
+        // 顯示模態框
+        const resultModal = new bootstrap.Modal(document.getElementById('resultModal'));
+        resultModal.show();
+
+        // 清空檔案輸入
+        fileInput.value = '';
+
+      } catch (error) {
+        alert(`錯誤: ${error.message}`);
+      } finally {
+        // 隱藏 spinner，啟用上傳按鈕
+        spinner.style.display = 'none';
+        uploadButton.disabled = false;
+      }
+    });
+  </script>
 </body>
+
 </html>
